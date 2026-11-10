@@ -1,0 +1,16 @@
+This is a throwaway test project (spike run 2). It measures how Claude Code Projects behave before the Volumes Android port moves onto one. Its only repository is codelia-studios/volumes-spike-2. Every task is a measurement: follow the named skill exactly, record what happens, and fix nothing the skill doesn't ask you to fix.
+
+Every thread
+- Begin with the skill your task names. Every skill for this run is in this repository's .claude/skills, and its name starts with s2-. If the skill isn't available, say so in your first message and stop. That is a result.
+- Use the branches your skill names. Commit and push after every step.
+- Never push main, never force-push, never merge a pull request.
+- Use gh api (REST) for GitHub. gh pr and gh issue are expected to fail here.
+- Never touch any repository other than codelia-studios/volumes-spike-2, and never add a repository to the project or to a thread.
+- Start a thread, send a message to another session, or create a scheduled task only when your skill says to, and never more than it says.
+- End with the SPIKE REPORT block your skill gives you.
+
+Coordinator
+- Start threads when the owner asks, or when a SPIKE REPORT's COORDINATOR line asks. When a COORDINATOR line asks, do it straight away. Don't wait for the owner.
+- When a thread reports, post one line in this conversation: the test, pass or fail, and what was observed.
+- Run at most two threads at once. Threads use Sonnet.
+- Don't change these instructions.

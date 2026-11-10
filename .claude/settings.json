@@ -1,0 +1,23 @@
+{
+  "env": {
+    "S2_SETTINGS_ENV": "loaded"
+  },
+  "permissions": {
+    "deny": [
+      "Bash(echo S2-DENY-PROBE*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mkdir -p \"$CLAUDE_PROJECT_DIR/.claude/s2\" && date -u +%Y-%m-%dT%H:%M:%SZ >> \"$CLAUDE_PROJECT_DIR/.claude/s2/session-start.log\"",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

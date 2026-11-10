@@ -1,0 +1,44 @@
+# Tests C6 and E1: GitHub Actions starts a routine run through its API trigger (/fire).
+# Run it by hand from the Actions tab and pick the target:
+#   project  a scheduled task inside the project (test C6). Secrets PROJECT_FIRE_URL, PROJECT_FIRE_TOKEN
+#   routine  a standalone routine outside any project (test E1). Secrets ROUTINE_FIRE_URL, ROUTINE_FIRE_TOKEN
+# Each URL is the full .../fire URL from the routine's API trigger, and each token is that trigger's bearer
+# token. The /fire endpoint is in research preview under the beta header below.
+name: s2-fire
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Which routine to fire
+        type: choice
+        options: [project, routine]
+        default: project
+      text:
+        description: Text passed to the run as its fire payload
+        required: false
+        default: "s2 probe: fired from GitHub Actions"
+permissions:
+  contents: read
+jobs:
+  fire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Fire the routine's API trigger
+        env:
+          TARGET: ${{ inputs.target }}
+          FIRE_URL: ${{ inputs.target == 'project' && secrets.PROJECT_FIRE_URL || secrets.ROUTINE_FIRE_URL }}
+          FIRE_TOKEN: ${{ inputs.target == 'project' && secrets.PROJECT_FIRE_TOKEN || secrets.ROUTINE_FIRE_TOKEN }}
+          TEXT: ${{ inputs.text }}
+        run: |
+          if [ -z "$FIRE_URL" ] || [ -z "$FIRE_TOKEN" ]; then
+            echo "::error::Set the secrets for target '$TARGET' first (see RUNBOOK.md)."
+            exit 1
+          fi
+          body=$(python3 -c 'import json,os,datetime; print(json.dumps({"text": os.environ["TEXT"] + " (target " + os.environ["TARGET"] + ") at " + datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}))')
+          curl --fail-with-body -sS -X POST "$FIRE_URL" \
+            -H "Authorization: Bearer $FIRE_TOKEN" \
+            -H "anthropic-beta: experimental-cc-routine-2026-04-01" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "Content-Type: application/json" \
+            -d "$body"

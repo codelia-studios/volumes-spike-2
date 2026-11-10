@@ -1,0 +1,20 @@
+# The spike's stand-in for `verify`: a seconds-long check, so auto-fix has a real CI result to react to.
+# On main, test_multiply fails until an s2-build thread implements multiply. That's expected.
+name: verify
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    name: verify
+    # A public sandbox repo gets GitHub-hosted minutes free.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests
+        working-directory: toy
+        run: python3 -m unittest -v
