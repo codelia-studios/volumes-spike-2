@@ -1,2 +1,3 @@
 - 2026-11-11T08:09:39Z | started by: schedule | in a project: yes | payload: none | open PRs: none
 - 2026-11-11T08:30:27Z | started by: unknown (no schedule/API payload visible; task text 'scheduled run of routine') | in a project: yes | payload: none | open PRs: none
+- 2026-11-11T08:38:59Z | started by: api fire (payload present, routine fire) | in a project: yes (CLAUDE.md in context) | payload: s2 probe: fired from GitHub Actions (target routine) at 2026-11-11T08:38:49Z | open PRs: none
