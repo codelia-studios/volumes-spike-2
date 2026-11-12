@@ -1,0 +1,4 @@
+# The owner's GitHub login: the one account whose comment can approve widening the fast
+# path (docs/process.md §4.6). `verify` reads it from the base, so a change to this line
+# takes effect only after it merges, and the change itself needs the current owner's approval.
+z3n105
