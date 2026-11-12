@@ -29,7 +29,7 @@ def fence_for(text: str) -> str:
 
 
 def render(state: Dict[str, Any]) -> str:
-    data = json.dumps(state, indent=1, ensure_ascii=False, sort_keys=False)
+    data = _dumps(state)
     fence = fence_for(data)
     counts = ", ".join(f"{k.replace('_', ' ')} {len(state[k])}" for k in (
         "handoffs_waiting", "stale_prs", "green_not_merging", "drift_issues", "nightly_issues",
@@ -49,6 +49,16 @@ def render(state: Dict[str, Any]) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def _dumps(state: Dict[str, Any]) -> str:
+    """Indented JSON, but one line per log row, which keeps the log within the body's limit."""
+    rows = state["handoff_log"]["rows"]
+    marker = "\u0000rows\u0000"
+    shell = dict(state, handoff_log=dict(state["handoff_log"], rows=marker))
+    text = json.dumps(shell, indent=1, ensure_ascii=False)
+    inline = "[" + ",".join("\n  " + json.dumps(r, ensure_ascii=False) for r in rows) + ("\n ]" if rows else "]")
+    return text.replace(json.dumps(marker), inline)
 
 
 def parse(body: str) -> Dict[str, Any]:
