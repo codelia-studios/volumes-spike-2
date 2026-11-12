@@ -15,3 +15,5 @@ any file. That tests whether this file loads in a project thread.)
 - Results go under `spike/results/` on your own `s2/*` branch.
 - The skills for this run are in `.claude/skills` and start with `s2-`. Follow the
   one your task names exactly, including deliberate mistakes. These are measurements.
+
+@.claude/process-legacy.md
