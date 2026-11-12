@@ -1,0 +1,29 @@
+# Test for volumes-android docs/process.md §4.3: does a comment posted by GitHub Actions
+# (GITHUB_TOKEN, user github-actions[bot]) on a finished thread's PR wake that thread through auto-fix?
+name: s2-nudge
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        default: "1"
+      text:
+        description: Comment text
+        default: "Nudge test from GitHub Actions (github-actions[bot])."
+permissions:
+  pull-requests: write
+  issues: write
+jobs:
+  nudge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Comment on the pull request as github-actions[bot]
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+          TEXT: ${{ inputs.text }}
+        run: |
+          body=$(python3 -c 'import json,os,datetime; print(json.dumps({"body": os.environ["TEXT"] + " Posted " + datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}))')
+          curl --fail-with-body -sS -X POST "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -d "$body"
