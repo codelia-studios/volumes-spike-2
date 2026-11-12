@@ -22,6 +22,7 @@ A snapshot is a dict:
 from __future__ import annotations
 
 import copy
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -74,8 +75,8 @@ def _due(snap, comment: dict, report: cv.Report) -> Tuple[str, Optional[datetime
     branch = cv.parse_branch(pr["branch"]) if pr else None
     if not pr or not branch or branch.item != report.item or branch.phase != report.phase:
         return "error", None
-    if pr["state"] == "merged":
-        return "due", pr["merged_at"]
+    if pr["state"] == "merged":  # due when both the merge and the report have happened
+        return "due", max(pr["merged_at"], comment["created"])
     if pr["state"] == "closed":
         return "cancelled", pr.get("closed_at") or comment["created"]
     return "waiting-merge", None
@@ -104,6 +105,7 @@ def _pickup(snap, reports, item: str, phase: str, due: datetime) -> Optional[dat
     if phase == "review":
         pr = _build_pr(snap, item)
         if pr:
+            pr = snap.get("pr_detail", lambda p: p)(pr)
             seen += [at for is_bot, at in pr["reviews"] if not is_bot and at >= due]
             st = pr["statuses"].get(REVIEW_STATUS)
             if st and st[1] >= due:
@@ -123,7 +125,7 @@ def handoffs(snap, reports) -> Tuple[List[dict], List[list], List[dict]]:
     logged = {_key(r) for r in snap["previous"].get("handoff_log", {}).get("rows", [])}
     waiting, rows, errors = [], [], []
     pending: Dict[Tuple[str, str], bool] = {}
-    candidates = []
+    steps = []
     for c, r in reports:
         if not r.next:
             continue
@@ -135,9 +137,9 @@ def handoffs(snap, reports) -> Tuple[List[dict], List[list], List[dict]]:
         if status == "waiting-merge":
             continue
         for target, phase in r.next:
-            candidates.append((due, status, c, r, target, phase))
-    candidates.sort(key=lambda x: x[0])
-    for due, status, c, r, target, phase in candidates:
+            steps.append((due, status, c, r, target, phase))
+    steps.sort(key=lambda x: x[0])
+    for due, status, c, r, target, phase in steps:
         row = [r.item, r.phase, target, phase, iso(due)]
         if tuple(row) in logged:
             continue
@@ -157,7 +159,7 @@ def handoffs(snap, reports) -> Tuple[List[dict], List[list], List[dict]]:
             logged.add(tuple(row))
         else:
             pending[(target, phase)] = True
-            if now - due >= HANDOFF_LIMIT:
+            if now - due > HANDOFF_LIMIT:
                 waiting.append({
                     "item": target, "phase": phase, "after": f"{r.item} {r.phase}",
                     "due": iso(due), "waited_min": minutes(now - due),
@@ -244,10 +246,10 @@ def owner_comments(snap) -> List[dict]:
             continue
         if c["user"].lower() != owner or c["app"] is not None:
             continue
-        anchor = f"issuecomment-{c['id']}"
+        anchor = re.compile(rf"issuecomment-{c['id']}(?!\d)")
         recorded = any(
             later["issue"] == c["issue"] and later["app"] == APP_THREAD and later["created"] >= c["created"]
-            and anchor in (later["body"] or "")
+            and anchor.search(later["body"] or "")
             for later in comments[i + 1:]
         )
         if not recorded:
@@ -318,15 +320,25 @@ def compute(snap) -> Dict[str, Any]:
     }
 
 
+# Rows are folded only once their report has left the comment window (14 days), so a folded
+# hand-off can't be found and logged a second time.
+FOLD_AFTER = timedelta(days=15)
+
+
 def trim_log(state: Dict[str, Any], fits: Callable[[Dict[str, Any]], bool]) -> Dict[str, Any]:
-    """Drop the oldest log rows into the `dropped` counters until the state fits the issue."""
+    """Fold the oldest log rows into the `dropped` counters until the state fits the issue.
+    Raises when it can't fit with only rows older than FOLD_AFTER folded."""
     log = state["handoff_log"]
     start = parse_time(log["since"])
     end = start + timedelta(days=MEASURE_DAYS)
-    while log["rows"] and not fits(state):
-        for r in log["rows"][:max(1, len(log["rows"]) // 50)]:  # 2% at a time: rendering is the cost
+    cutoff = parse_time(state["generated_at"]) - FOLD_AFTER
+    while not fits(state):
+        old = [r for r in log["rows"][:max(1, len(log["rows"]) // 50)] if parse_time(r[4]) < cutoff]
+        if not old:  # 2% at a time, as rendering is the cost
+            raise ValueError("the state doesn't fit the issue even with every hand-off older than 15 days folded")
+        for r in old:
             _drop(log, r, start, end)
-        del log["rows"][:max(1, len(log["rows"]) // 50)]
+        del log["rows"][:len(old)]
     return state
 
 
