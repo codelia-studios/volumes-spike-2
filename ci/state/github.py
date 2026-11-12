@@ -98,7 +98,7 @@ query($owner: String!, $name: String!, $after: String) {
       nodes {
         number url title headRefName isDraft createdAt mergeable
         reviews(last: 30) { nodes { submittedAt author { __typename } } }
-        commits(last: 1) { nodes { commit {
+        commits(last: 10) { nodes { commit {
           committedDate
           parents(first: 2) { totalCount nodes { status { contexts { context state createdAt description } } } }
           status { contexts { context state createdAt description } }
@@ -124,12 +124,12 @@ def _checks(commit) -> Dict[str, tuple]:
     out: Dict[str, tuple] = {}
     for suite in (commit.get("checkSuites") or {}).get("nodes") or []:
         for run in (suite.get("checkRuns") or {}).get("nodes") or []:
-            if run["status"] != "COMPLETED":
-                out.setdefault(run["name"], ("pending", None))
+            prev = out.get(run["name"])
+            if run["status"] != "COMPLETED":  # a run still going (a re-run) outranks any earlier result
+                out[run["name"]] = ("pending", None)
                 continue
             at = parse_time(run["completedAt"])
-            prev = out.get(run["name"])
-            if not prev or prev[1] is None or at > prev[1]:
+            if not prev or (prev[1] is not None and at > prev[1]):
                 out[run["name"]] = ((run["conclusion"] or "").lower(), at)
     return {k: v for k, v in out.items() if v[1] is not None}
 
@@ -140,14 +140,19 @@ def open_prs(gh: GitHub) -> List[dict]:
     while True:
         data = gh.graphql(PRS_QUERY, owner=owner, name=name, after=after)["repository"]["pullRequests"]
         for n in data["nodes"]:
-            commit = (n["commits"]["nodes"] or [{}])[0].get("commit") or {}
+            history = [c["commit"] for c in n["commits"]["nodes"] or []]
+            commit = history[-1] if history else {}
             parents = commit.get("parents") or {"totalCount": 1, "nodes": []}
+            # A thread's last work: the newest commit that isn't a merge (the train's update of the
+            # branch is a merge, and isn't the thread's activity).
+            own = [c for c in history if (c.get("parents") or {}).get("totalCount", 1) < 2]
             first_parent = (parents["nodes"] or [{}])[0]
             out.append({
                 "number": n["number"], "url": n["url"], "title": n["title"], "branch": n["headRefName"],
                 "draft": n["isDraft"], "state": "open", "created": parse_time(n["createdAt"]),
                 "merged_at": None, "closed_at": None, "mergeable": n["mergeable"],
-                "head_date": parse_time(commit.get("committedDate")), "head_parents": parents["totalCount"],
+                "head_date": parse_time(own[-1]["committedDate"]) if own else None,
+                "head_parents": parents["totalCount"],
                 "checks": _checks(commit), "statuses": _contexts(commit.get("status")),
                 "parent_statuses": _contexts(first_parent.get("status")),
                 "reviews": [((r.get("author") or {}).get("__typename") == "Bot", parse_time(r["submittedAt"]))
@@ -167,8 +172,26 @@ def closed_prs(gh: GitHub, since: datetime) -> List[dict]:
         "draft": p["draft"], "state": "merged" if p["merged_at"] else "closed",
         "created": parse_time(p["created_at"]), "merged_at": parse_time(p["merged_at"]),
         "closed_at": parse_time(p["closed_at"]), "mergeable": None, "head_date": None, "head_parents": 1,
-        "checks": {}, "statuses": {}, "parent_statuses": {}, "reviews": [],
+        "checks": {}, "statuses": {}, "parent_statuses": {}, "reviews": [], "head_sha": p["head"]["sha"],
+        "detail": False,  # reviews and statuses are fetched only when a hand-off needs them
     } for p in rows]
+
+
+def pr_detail(gh: GitHub):
+    """Fills in a closed pull request's reviews and its head's statuses, when a review hand-off
+    needs them (a build PR the train merged before any run saw its review)."""
+    def fill(pr: dict) -> dict:
+        if pr.get("detail", True):
+            return pr
+        reviews = gh.pages(f"/pulls/{pr['number']}/reviews")
+        pr["reviews"] = [(r["user"]["type"] == "Bot", parse_time(r["submitted_at"]))
+                         for r in reviews if r.get("submitted_at") and r.get("user")]
+        status = gh.get(f"/commits/{pr['head_sha']}/status") or {}
+        pr["statuses"] = {s["context"]: (s["state"], parse_time(s["created_at"]), s.get("description") or "")
+                          for s in status.get("statuses") or []}
+        pr["detail"] = True
+        return pr
+    return fill
 
 
 def comments(gh: GitHub, since: datetime) -> List[dict]:
@@ -199,21 +222,28 @@ def labelled_issues(gh: GitHub, label: str, state: str = "open", since: Optional
 
 def first_commit_finder(gh: GitHub, base: str):
     """(branch or contract prefix, since) -> the earliest commit at or after `since` that the
-    branch has and `base` doesn't. Only the branch's own commits count: a branch cut from a
-    `base` that moved after the hand-off was due would otherwise look picked up at once.
-    Branch names are matched ignoring case (IDs are upper case, but a thread may slip)."""
+    branch has and `base` doesn't, merges left out. Only the branch's own commits count: a
+    branch cut from a `base` that moved after the hand-off was due would otherwise look picked
+    up at once, and the train's merge of `base` into a branch isn't a thread's work. Both lists
+    are bounded by date, so a long branch is read in full. Branch names are matched ignoring
+    case (IDs are upper case, but a thread may slip)."""
     cache: Dict[tuple, Optional[datetime]] = {}
     index: Dict[str, List[str]] = {}
+    on_base: Dict[datetime, set] = {}
 
     def branches(ref: str) -> List[str]:
         top = ref.split("/", 1)[0] + "/"
         if top not in index:
-            refs = gh.get(f"/git/matching-refs/heads/{top}") or []
+            refs = gh.pages(f"/git/matching-refs/heads/{top}")
             index[top] = [r["ref"][len("refs/heads/"):] for r in refs]
         if ref.endswith("-"):  # every contract branch of one item
             item = ref[len("contract/"):-1]
             return [b for b, p in ((b, parse_branch(b)) for b in index[top]) if p and p.phase == "contract" and p.item == item]
         return [b for b in index[top] if b.lower() == ref.lower()]
+
+    def commits(ref: str, since: datetime) -> List[dict]:
+        stamp = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+        return gh.pages(f"/commits?sha={urllib.parse.quote(ref, safe='/')}&since={stamp}")
 
     def find(ref: str, since: datetime) -> Optional[datetime]:
         key = (ref.lower(), since)
@@ -221,8 +251,11 @@ def first_commit_finder(gh: GitHub, base: str):
             return cache[key]
         best = None
         for b in branches(ref):
-            diff = gh.get(f"/compare/{urllib.parse.quote(base, safe='')}...{urllib.parse.quote(b, safe='')}") or {}
-            for c in diff.get("commits") or []:
+            if since not in on_base:
+                on_base[since] = {c["sha"] for c in commits(base, since)}
+            for c in commits(b, since):
+                if c["sha"] in on_base[since] or len(c.get("parents") or []) > 1:
+                    continue
                 t = parse_time(c["commit"]["committer"]["date"])
                 if t >= since and (best is None or t < best):
                     best = t
