@@ -98,11 +98,11 @@ query($owner: String!, $name: String!, $after: String) {
       nodes {
         number url title headRefName isDraft createdAt mergeable
         reviews(last: 30) { nodes { submittedAt author { __typename } } }
-        commits(last: 10) { nodes { commit {
-          committedDate
+        history: commits(last: 10) { nodes { commit { committedDate parents { totalCount } } } }
+        head: commits(last: 1) { nodes { commit {
           parents(first: 2) { totalCount nodes { status { contexts { context state createdAt description } } } }
           status { contexts { context state createdAt description } }
-          checkSuites(first: 30) { nodes { checkRuns(first: 50) { nodes { name status conclusion completedAt } } } }
+          checkSuites(first: 20) { nodes { checkRuns(first: 30) { nodes { name status conclusion completedAt } } } }
         } } }
       }
     }
@@ -140,8 +140,8 @@ def open_prs(gh: GitHub) -> List[dict]:
     while True:
         data = gh.graphql(PRS_QUERY, owner=owner, name=name, after=after)["repository"]["pullRequests"]
         for n in data["nodes"]:
-            history = [c["commit"] for c in n["commits"]["nodes"] or []]
-            commit = history[-1] if history else {}
+            history = [c["commit"] for c in n["history"]["nodes"] or []]
+            commit = (n["head"]["nodes"] or [{}])[0].get("commit") or {}
             parents = commit.get("parents") or {"totalCount": 1, "nodes": []}
             # A thread's last work: the newest commit that isn't a merge (the train's update of the
             # branch is a merge, and isn't the thread's activity).
