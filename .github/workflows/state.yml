@@ -10,8 +10,9 @@
 # pull_request; the checkout is the default branch): a pull request can't change what the
 # state says. It reads pull requests and comments as data only and never runs their code.
 #
-# CI results come through workflow_run and status: GitHub sends no check_suite or check_run
-# event for checks GitHub Actions itself created, so check_suite only covers other apps.
+# CI results come through workflow_run and status (`review`, `train`). No check_suite or check_run
+# trigger: GitHub sends none for checks GitHub Actions created, and other apps' checks don't
+# matter here.
 #
 # The Action posts only to its own issue. Its writes use GITHUB_TOKEN, so they start no
 # workflow, this one included.
@@ -27,8 +28,6 @@ on:
   pull_request_review:
     types: [submitted]
   status:
-  check_suite:
-    types: [completed]
   workflow_run:
     workflows: [verify, train, Nightly device matrix]
     types: [completed]
