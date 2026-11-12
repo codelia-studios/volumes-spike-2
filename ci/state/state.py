@@ -56,6 +56,7 @@ def snapshot(gh: gh_mod.GitHub, owner: str, previous: dict, now: datetime) -> di
         "drift_issues": _brief(gh_mod.labelled_issues(gh, "drift")),
         "nightly_issues": _brief(gh_mod.labelled_issues(gh, "nightly")),
         "first_commit": gh_mod.first_commit_finder(gh, repo["default_branch"]),
+        "pr_detail": gh_mod.pr_detail(gh),
         "previous": previous,
         "measure_since": signals.parse_time(measure) if measure else None,
     }
@@ -94,7 +95,7 @@ def main(argv: List[str]) -> int:
             node, pinned = info["id"], info["isPinned"]
             previous = issue_mod.trusted_previous(current, info["body"], (info.get("editor") or {}).get("login"), owner)
     except issue_mod.StateIssueError as e:
-        print(f"::error title=State issue::{e}" if a.github else f"error: {e}", file=sys.stderr)
+        print(f"::error title=State issue::{_plain(e)}" if a.github else f"error: {e}", file=sys.stderr)
         return 1
 
     state = signals.compute(snapshot(gh, owner, previous, now))
@@ -117,13 +118,18 @@ def main(argv: List[str]) -> int:
         try:
             gh.graphql(PIN, id=node)
         except gh_mod.GitHubError as e:  # pinning is a convenience: the label finds the issue too
-            print(f"::warning title=State issue::couldn't pin it: {e}" if a.github else f"warning: {e}")
+            print(f"::warning title=State issue::couldn't pin it: {_plain(e)}" if a.github else f"warning: {e}")
 
     if a.github and os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
             f.write(body.split("```", 1)[0] + f"\n{gh.calls} GitHub API calls.\n")
     print(f"{gh.calls} GitHub API calls; waiting: {state['waiting']}")
     return 0
+
+
+def _plain(e: Exception) -> str:
+    """An error as one annotation line: no newlines, and no `::` to start a workflow command."""
+    return " ".join(str(e).split()).replace("::", ": :")
 
 
 def _older_than(previous: dict, now: datetime, minutes: int) -> bool:
