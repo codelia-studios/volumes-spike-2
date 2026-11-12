@@ -1,0 +1,73 @@
+# state: the state of the work, as JSON in one pinned issue (docs/process.md §4.1 "State Action",
+# §4.5, §9; ci/state/README.md).
+#
+# It lists what waits: hand-offs not picked up after 20 minutes, phase pull requests idle for over
+# 2 hours, green pull requests that aren't merging, open drift and nightly issues, the owner's new
+# comments on `owner` issues, and report blocks that don't parse. It also logs every hand-off's
+# pickup delay, the measure for ADR-686's fallback. The pulse reads the issue with one call.
+#
+# Every trigger runs main's copy of this file and of ci/state (pull_request_target, never
+# pull_request; the checkout is the default branch): a pull request can't change what the
+# state says. It reads pull requests and comments as data only and never runs their code.
+#
+# CI results come through workflow_run and status: GitHub sends no check_suite or check_run
+# event for checks GitHub Actions itself created, so check_suite only covers other apps.
+#
+# The Action posts only to its own issue. Its writes use GITHUB_TOKEN, so they start no
+# workflow, this one included.
+name: state
+
+on:
+  pull_request_target:
+    types: [opened, reopened, closed, synchronize, ready_for_review, converted_to_draft]
+  issues:
+    types: [opened, reopened, closed, labeled, unlabeled]
+  issue_comment:
+    types: [created, edited]
+  pull_request_review:
+    types: [submitted]
+  status:
+  check_suite:
+    types: [completed]
+  workflow_run:
+    workflows: [verify, train, Nightly device matrix]
+    types: [completed]
+  schedule:
+    - cron: "4,19,34,49 * * * *"
+  workflow_dispatch:
+
+# One writer at a time. A newer pending run replaces an older pending one, which loses nothing:
+# every run reads everything afresh.
+concurrency:
+  group: state
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  checks: read
+  statuses: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  state:
+    name: state
+    runs-on: ubuntu-latest  # sandbox: no light runner
+    timeout-minutes: 5
+    steps:
+      - name: Check out main's state Action
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: ci
+          submodules: false
+          persist-credentials: false
+
+      - name: Write the state issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          STATE_MEASURE_SINCE: ${{ vars.STATE_MEASURE_SINCE }}
+        run: python3 ci/state/state.py --repo "$GITHUB_REPOSITORY" --github
