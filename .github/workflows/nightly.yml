@@ -1,11 +1,24 @@
 # Sandbox stand-in for volumes-android's nightly matrix: the state Action's dead-clock guard reads its runs.
+# skip=true stands in for a night's second trigger, which the once-a-night guard ends before "Build the APKs".
 name: Nightly device matrix
 on:
   workflow_dispatch:
+    inputs:
+      skip:
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
-  matrix:
+  guard:
+    name: Once a night
     runs-on: ubuntu-latest
     steps:
-      - run: echo "stand-in nightly run"
+      - run: echo "once a night"
+  build:
+    name: Build the APKs
+    needs: guard
+    if: ${{ !inputs.skip }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "stand-in matrix"
