@@ -6,4 +6,5 @@ def add(a, b):
 
 
 def multiply(a, b):
-    raise NotImplementedError("s2-build implements this")
+    """Return the product of a and b."""
+    return a * b
