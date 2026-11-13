@@ -33,7 +33,7 @@ def render(state: Dict[str, Any]) -> str:
     fence = fence_for(data)
     counts = ", ".join(f"{k.replace('_', ' ')} {len(state[k])}" for k in (
         "handoffs_waiting", "stale_prs", "green_not_merging", "drift_issues", "nightly_issues",
-        "owner_comments", "report_errors"))
+        "nightly_overdue", "owner_comments", "report_errors"))
     rate = state["miss_rate"]["first_14_days"]
     lines = [
         "Written by the state Action (`.github/workflows/state.yml`, docs/process.md §4.1 and §4.5) on every "
