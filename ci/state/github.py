@@ -220,15 +220,30 @@ def labelled_issues(gh: GitHub, label: str, state: str = "open", since: Optional
             for i in gh.pages(q) if "pull_request" not in i]
 
 
-def nightly_runs(gh: GitHub, workflow: str, branch: str) -> Optional[List[dict]]:
-    """The newest completed runs of `workflow` on `branch` (one page: the newest are enough),
-    or None when the workflow file doesn't exist."""
+NIGHTLY_JOB = "Build the APKs"  # skipped on a night's second trigger (the once-a-night guard), so it didn't run
+NIGHTLY_LOOKS = 5  # job lists read per state run, newest first, until one ran the matrix
+
+
+def nightly_runs(gh: GitHub, workflow: str, branch: str, events) -> Optional[List[dict]]:
+    """The newest completed runs of `workflow` on `branch` (one page: the newest are enough), or
+    None when the workflow file doesn't exist. `ran` says whether the run ran the matrix: True
+    when its "Build the APKs" job exists and wasn't skipped (ci/device/night.py's
+    `ran_the_matrix`), False otherwise, None where unread. Job lists are read newest first,
+    for runs of `events` only, until one ran it."""
     page = gh.get(f"/actions/workflows/{urllib.parse.quote(workflow)}/runs?branch={urllib.parse.quote(branch)}"
                   "&status=completed&per_page=30")
     if page is None:
         return None
-    return [{"url": r["html_url"], "event": r["event"], "completed": r["updated_at"]}
-            for r in page.get("workflow_runs", [])]
+    runs = sorted(page.get("workflow_runs", []), key=lambda r: r["updated_at"], reverse=True)
+    out, looks = [], 0
+    for r in runs:
+        ran = None
+        if r["event"] in events and looks < NIGHTLY_LOOKS and not any(o["ran"] for o in out):
+            looks += 1
+            jobs = (gh.get(f"/actions/runs/{r['id']}/jobs?filter=latest&per_page=100") or {}).get("jobs", [])
+            ran = any(j["name"] == NIGHTLY_JOB and j.get("conclusion") not in (None, "skipped") for j in jobs)
+        out.append({"url": r["html_url"], "event": r["event"], "completed": r["updated_at"], "ran": ran})
+    return out
 
 
 def first_commit_finder(gh: GitHub, base: str):
