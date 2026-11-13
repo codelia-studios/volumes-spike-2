@@ -1,0 +1,11 @@
+# Sandbox stand-in for volumes-android's nightly matrix: the state Action's dead-clock guard reads its runs.
+name: Nightly device matrix
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "stand-in nightly run"
