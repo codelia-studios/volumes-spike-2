@@ -220,6 +220,17 @@ def labelled_issues(gh: GitHub, label: str, state: str = "open", since: Optional
             for i in gh.pages(q) if "pull_request" not in i]
 
 
+def nightly_runs(gh: GitHub, workflow: str, branch: str) -> Optional[List[dict]]:
+    """The newest completed runs of `workflow` on `branch` (one page: the newest are enough),
+    or None when the workflow file doesn't exist."""
+    page = gh.get(f"/actions/workflows/{urllib.parse.quote(workflow)}/runs?branch={urllib.parse.quote(branch)}"
+                  "&status=completed&per_page=30")
+    if page is None:
+        return None
+    return [{"url": r["html_url"], "event": r["event"], "completed": r["updated_at"]}
+            for r in page.get("workflow_runs", [])]
+
+
 def first_commit_finder(gh: GitHub, base: str):
     """(branch or contract prefix, since) -> the earliest commit at or after `since` that the
     branch has and `base` doesn't, merges left out. Only the branch's own commits count: a
