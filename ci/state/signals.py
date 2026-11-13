@@ -14,8 +14,9 @@ A snapshot is a dict:
                     requests, oldest first, over the window
   owner_issues    {number: title} of issues labelled `owner`
   drift_issues, nightly_issues   [{number, title, url, created}] open issues with that label
-  nightly_runs    [{url, event, completed}] completed runs of the nightly matrix on main, or None
-                    when its workflow file doesn't exist
+  nightly_runs    [{url, event, completed, ran}] completed runs of the nightly matrix on main
+                    (`ran`: its "Build the APKs" job ran, not skipped), or None when its
+                    workflow file doesn't exist
   first_commit    callable (branch, since) -> earliest commit datetime at or after `since`
                     on that branch, or None; for a contract, the branch is a prefix ending in `-`
   previous        the previous state (dict) or {}
@@ -286,11 +287,13 @@ def _rate(rows: List[list], start: datetime, end: Optional[datetime], waiting: L
 def nightly_overdue(snap) -> List[dict]:
     """The guard that shows a dead clock: no completed nightly run on main, from the clock or the
     cron, within 26 hours. A red run counts as having run (red is the `nightly` issues' job); a
-    run from a pull request's self-test doesn't. A missing workflow file is listed too."""
+    run from a pull request's self-test doesn't, nor a night's second trigger, which the
+    once-a-night guard ends before "Build the APKs" (a late cron after the clock's run would
+    otherwise put the alarm off by up to a day). A missing workflow file is listed too."""
     runs = snap["nightly_runs"]
     if runs is None:
         return [{"workflow": NIGHTLY_WORKFLOW, "last_completed": None, "url": None, "reason": "no workflow file"}]
-    done = [r for r in runs if r["event"] in NIGHTLY_EVENTS and r.get("completed")]
+    done = [r for r in runs if r["event"] in NIGHTLY_EVENTS and r.get("completed") and r.get("ran")]
     last = max(done, key=lambda r: parse_time(r["completed"]), default=None)
     if last and snap["now"] - parse_time(last["completed"]) <= NIGHTLY_LIMIT:
         return []
