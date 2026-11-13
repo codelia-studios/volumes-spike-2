@@ -3,7 +3,8 @@
 #
 # It lists what waits: hand-offs not picked up after 20 minutes, phase pull requests idle for over
 # 2 hours, green pull requests that aren't merging, open drift and nightly issues, the owner's new
-# comments on `owner` issues, and report blocks that don't parse. It also logs every hand-off's
+# comments on `owner` issues, a nightly matrix that hasn't run in 26 hours (the server's clock is
+# dead), and report blocks that don't parse. It also logs every hand-off's
 # pickup delay, the measure for ADR-686's fallback. The pulse reads the issue with one call.
 #
 # Every trigger runs main's copy of this file and of ci/state (pull_request_target, never
@@ -31,6 +32,8 @@ on:
   workflow_run:
     workflows: [verify, train, Nightly device matrix]
     types: [completed]
+  # GitHub drops most cron slots here; the server's clock dispatches this every 15 minutes, and
+  # the cron stays as a second chance. Both in one slot is harmless (see concurrency).
   schedule:
     - cron: "4,19,34,49 * * * *"
   workflow_dispatch:
@@ -42,6 +45,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: read # the nightly matrix's runs, for the dead-clock guard
   contents: read
   issues: write
   pull-requests: read
