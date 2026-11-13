@@ -14,6 +14,8 @@ A snapshot is a dict:
                     requests, oldest first, over the window
   owner_issues    {number: title} of issues labelled `owner`
   drift_issues, nightly_issues   [{number, title, url, created}] open issues with that label
+  nightly_runs    [{url, event, completed}] completed runs of the nightly matrix on main, or None
+                    when its workflow file doesn't exist
   first_commit    callable (branch, since) -> earliest commit datetime at or after `since`
                     on that branch, or None; for a contract, the branch is a prefix ending in `-`
   previous        the previous state (dict) or {}
@@ -37,6 +39,9 @@ APP_THREAD = "claude"  # performed_via_github_app.slug of what a thread posts
 VERIFY_CHECK = "verify"
 REVIEW_STATUS = "review"
 TRAIN_STATUS = "train"
+NIGHTLY_WORKFLOW = "nightly.yml"
+NIGHTLY_EVENTS = ("schedule", "workflow_dispatch")  # the server's clock dispatches; the cron is a second chance
+NIGHTLY_LIMIT = timedelta(hours=26)  # a daily run, with two hours' slack: past this, the clock is dead
 
 
 def iso(t: Optional[datetime]) -> Optional[str]:
@@ -278,6 +283,22 @@ def _rate(rows: List[list], start: datetime, end: Optional[datetime], waiting: L
     return {"handoffs": n, "missed": m}
 
 
+def nightly_overdue(snap) -> List[dict]:
+    """The guard that shows a dead clock: no completed nightly run on main, from the clock or the
+    cron, within 26 hours. A red run counts as having run (red is the `nightly` issues' job); a
+    run from a pull request's self-test doesn't. A missing workflow file is listed too."""
+    runs = snap["nightly_runs"]
+    if runs is None:
+        return [{"workflow": NIGHTLY_WORKFLOW, "last_completed": None, "url": None, "reason": "no workflow file"}]
+    done = [r for r in runs if r["event"] in NIGHTLY_EVENTS and r.get("completed")]
+    last = max(done, key=lambda r: parse_time(r["completed"]), default=None)
+    if last and snap["now"] - parse_time(last["completed"]) <= NIGHTLY_LIMIT:
+        return []
+    return [{"workflow": NIGHTLY_WORKFLOW, "last_completed": last["completed"] if last else None,
+             "url": last["url"] if last else None,
+             "reason": "no completed run within 26 hours" if last else "never completed"}]
+
+
 def compute(snap) -> Dict[str, Any]:
     now = snap["now"]
     prev_log = snap["previous"].get("handoff_log", {})
@@ -302,6 +323,7 @@ def compute(snap) -> Dict[str, Any]:
         "green_not_merging": green_not_merging(snap),
         "drift_issues": snap["drift_issues"],
         "nightly_issues": snap["nightly_issues"],
+        "nightly_overdue": nightly_overdue(snap),
         "owner_comments": owner_comments(snap),
         "report_errors": errors + ho_errors,
     }
