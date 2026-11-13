@@ -55,6 +55,7 @@ def snapshot(gh: gh_mod.GitHub, owner: str, previous: dict, now: datetime) -> di
         "owner_issues": {i["number"]: i["title"] for i in gh_mod.labelled_issues(gh, "owner", "all", since)},
         "drift_issues": _brief(gh_mod.labelled_issues(gh, "drift")),
         "nightly_issues": _brief(gh_mod.labelled_issues(gh, "nightly")),
+        "nightly_runs": gh_mod.nightly_runs(gh, signals.NIGHTLY_WORKFLOW, repo["default_branch"]),
         "first_commit": gh_mod.first_commit_finder(gh, repo["default_branch"]),
         "pr_detail": gh_mod.pr_detail(gh),
         "previous": previous,
