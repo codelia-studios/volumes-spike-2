@@ -26,7 +26,7 @@ class GitHub:
         self.token, self.repo, self.api = token, repo, api
         self.calls = 0
 
-    def _request(self, method: str, url: str, body: Any = None):
+    def _request(self, method: str, url: str, body: Any = None, retry: bool = True):
         if not url.startswith("http"):
             url = self.api + url
         data = None if body is None else json.dumps(body).encode()
@@ -44,14 +44,14 @@ class GitHub:
                     return (json.loads(text) if text else None), resp.headers
             except urllib.error.HTTPError as e:
                 detail = e.read().decode(errors="replace")[:300]
-                if e.code in (502, 503, 504) and attempt < 2:
+                if retry and e.code in (502, 503, 504) and attempt < 2:
                     time.sleep(2 * (attempt + 1))
                     continue
                 if e.code == 404 or e.code == 409:  # 409: an empty repository's or branch's commits
                     return None, e.headers
                 raise GitHubError(f"{method} {url}: {e.code} {detail}") from None
             except urllib.error.URLError as e:
-                if attempt < 2:
+                if retry and attempt < 2:
                     time.sleep(2 * (attempt + 1))
                     continue
                 raise GitHubError(f"{method} {url}: {e}") from None
@@ -76,7 +76,12 @@ class GitHub:
         return out
 
     def post(self, path: str, body: dict):
-        return self._request("POST", f"/repos/{self.repo}{path}", body)[0]
+        """Never retried: a POST that timed out may have created its comment or issue, and the
+        next run, which sees what exists, is the retry."""
+        data = self._request("POST", f"/repos/{self.repo}{path}", body, retry=False)[0]
+        if data is None:
+            raise GitHubError(f"POST {path}: not found")
+        return data
 
     def patch(self, path: str, body: dict):
         return self._request("PATCH", f"/repos/{self.repo}{path}", body)[0]
