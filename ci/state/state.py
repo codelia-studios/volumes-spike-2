@@ -101,6 +101,7 @@ def main(argv: List[str]) -> int:
         return 1
 
     state = signals.compute(snapshot(gh, owner, previous, now))
+    nudge(gh, state, a.dry_run, a.github)
     state = signals.trim_log(state, issue_mod.fits)
     body = issue_mod.render(state)
 
@@ -127,6 +128,27 @@ def main(argv: List[str]) -> int:
             f.write(body.split("```", 1)[0] + f"\n{gh.calls} GitHub API calls.\n")
     print(f"{gh.calls} GitHub API calls; waiting: {state['waiting']}")
     return 0
+
+
+def nudge(gh: gh_mod.GitHub, state: dict, dry_run: bool, annotate: bool) -> None:
+    """Post each overdue hand-off's one nudge on the reporting thread's own pull request, and
+    mark it in the state. The comment carries the marker that stops a second one, so a run that
+    fails after posting can't nudge twice."""
+    for n in state.pop("nudges_to_send"):
+        if dry_run:
+            print(f"would nudge #{n['pr']}: {' '.join(n['key'][2:4])}")
+            continue
+        try:
+            c = gh.post(f"/issues/{n['pr']}/comments", {"body": n["body"]})
+        except gh_mod.GitHubError as e:  # the pulse still lists the hand-off
+            print(f"::warning title=Nudge::#{n['pr']}: {_plain(e)}" if annotate else f"warning: {e}")
+            continue
+        for w in state["handoffs_waiting"]:
+            if [w["item"], w["phase"], w["due"]] == [n["key"][2], n["key"][3], n["key"][4]]:
+                w["nudged"] = {"at": c["created_at"], "url": c["html_url"], "pr": n["pr"]}
+        state["nudges"]["sent"] += 1
+        state["nudges"]["waiting"] += 1
+        print(f"nudged #{n['pr']}: {' '.join(n['key'][2:4])}")
 
 
 def _plain(e: Exception) -> str:
