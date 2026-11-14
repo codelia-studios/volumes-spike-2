@@ -40,6 +40,9 @@ from typing import List, Optional, Tuple
 PHASES = ("spec", "oracle", "build", "review", "contract", "intake")
 # Phases whose next step waits for their pull request to merge.
 DUE_AT_MERGE = ("spec", "contract")
+# Next steps due when the report is posted, after any phase: a review comes before the merge,
+# so waiting for the merge would make it never due.
+DUE_AT_REPORT = ("review",)
 # Phases with no branch of their own: picked up by their review or report instead.
 NO_BRANCH = ("review",)
 OUTCOMES = ("done", "stuck", "question")
