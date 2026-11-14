@@ -40,6 +40,10 @@ APP_THREAD = "claude"  # performed_via_github_app.slug of what a thread posts
 VERIFY_CHECK = "verify"
 REVIEW_STATUS = "review"
 TRAIN_STATUS = "train"
+ACTION_BOT = "github-actions[bot]"  # who the state Action posts as (GITHUB_TOKEN)
+NUDGE_MARK = re.compile(r"<!-- volumes-nudge: (\S+) (\S+) -> (\S+) (\S+) @ (\S+) -->")
+NUDGE_CLOSED_PRS = False  # a comment on a closed pull request doesn't wake its thread (§4.3, measured)
+NUDGES_PER_RUN = 5  # a cap, so a fault can't spam every pull request at once
 NIGHTLY_WORKFLOW = "nightly.yml"
 NIGHTLY_EVENTS = ("schedule", "workflow_dispatch")  # the server's clock dispatches; the cron is a second chance
 NIGHTLY_LIMIT = timedelta(hours=26)  # a daily run, with two hours' slack: past this, the clock is dead
@@ -94,7 +98,17 @@ def _build_pr(snap, item: str) -> Optional[dict]:
     return max(prs, key=lambda p: p["created"]) if prs else None
 
 
-def _pickup(snap, reports, item: str, phase: str, due: datetime) -> Optional[datetime]:
+def _reviewed_pr(snap, item: str, on: Optional[int]) -> Optional[dict]:
+    """The pull request a review hand-off is about: the one the report is on when it is that
+    item's own phase pull request (a spec's or a contract's review), else the item's build PR."""
+    pr = next((p for p in snap["prs"] if p["number"] == on), None) if on is not None else None
+    branch = cv.parse_branch(pr["branch"]) if pr else None
+    if branch and branch.item == item:
+        return pr
+    return _build_pr(snap, item)
+
+
+def _pickup(snap, reports, item: str, phase: str, due: datetime, on: Optional[int] = None) -> Optional[datetime]:
     seen: List[datetime] = []
     branch = cv.branch_for(item, phase)
     if branch:
@@ -109,7 +123,7 @@ def _pickup(snap, reports, item: str, phase: str, due: datetime) -> Optional[dat
         if r.item == item and r.phase == phase and c["created"] >= due:
             seen.append(c["created"])
     if phase == "review":
-        pr = _build_pr(snap, item)
+        pr = _reviewed_pr(snap, item, on)
         if pr:
             pr = snap.get("pr_detail", lambda p: p)(pr)
             seen += [at for is_bot, at in pr["reviews"] if not is_bot and at >= due]
@@ -119,16 +133,74 @@ def _pickup(snap, reports, item: str, phase: str, due: datetime) -> Optional[dat
     return min(seen) if seen else None
 
 
+def _review_target(snap, item: str, c: dict) -> str:
+    pr = _reviewed_pr(snap, item, c["issue"])
+    return pr["branch"] if pr else f"item/{item}-build"
+
+
 def _key(row) -> Tuple:
     return tuple(row[:5])
 
 
+# ---------------------------------------------------------------- nudges
+
+
+def nudge_marker(row) -> str:
+    """The hidden line that names a nudge's hand-off: the comments are the record of what was sent."""
+    return "<!-- volumes-nudge: %s %s -> %s %s @ %s -->" % tuple(row[:5])
+
+
+def _sent_nudges(snap) -> Dict[Tuple, dict]:
+    """Nudges already posted, by hand-off key, read from the Action's own comments only: a
+    marker anyone else writes neither counts as a nudge nor stops one."""
+    sent: Dict[Tuple, dict] = {}
+    for c in snap["comments"]:
+        if c["user"] != ACTION_BOT or not c["is_bot"]:
+            continue
+        for m in NUDGE_MARK.finditer(c["body"]):
+            sent.setdefault(tuple(m.groups()), {"at": iso(c["created"]), "url": c["url"], "pr": c["issue"]})
+    return sent
+
+
+def _own_pr(snap, c: dict, r: cv.Report) -> Optional[dict]:
+    """Where to nudge: the pull request the report is on, when it is the reporting thread's own
+    (its phase branch; a review reports on the build pull request it reviewed). A comment on a
+    closed or merged one doesn't wake its thread (§4.3, measured), so then the item's newest
+    open phase pull request, or nowhere. A report that isn't on its own pull request gets none."""
+    pr = next((p for p in snap["prs"] if p["number"] == c["issue"]), None)
+    branch = cv.parse_branch(pr["branch"]) if pr else None
+    if not branch or branch.item != r.item:
+        return None
+    if branch.phase != r.phase and not (r.phase == "review" and branch.phase == "build"):
+        return None
+    if pr["state"] == "open" or NUDGE_CLOSED_PRS:
+        return pr
+    open_ = [p for p in snap["prs"] if p["state"] == "open"
+             and (cv.parse_branch(p["branch"]) or cv.Branch("", "")).item == r.item]
+    return max(open_, key=lambda p: p["created"]) if open_ else None
+
+
+def nudge_body(w: dict, row) -> str:
+    return (f"**The state Action:** the hand-off to `{w['item']} {w['phase']}` after your report ({w['report']}) "
+            f"was due at {w['due']} and nothing has picked it up for {w['waited_min']} minutes. Please post your "
+            f"report block again, with its COORDINATOR line, or reply saying what blocks it. Push nothing for this "
+            f"(docs/process.md §4.3).\n\n{nudge_marker(row)}\n")
+
+
 def handoffs(snap, reports) -> Tuple[List[dict], List[list], List[dict]]:
     """(waiting, new log rows, errors). A log row is
-    [item, from_phase, next_item, next_phase, due, picked_up, delay_seconds, result],
-    result one of picked, late, expired, cancelled. late and expired are misses."""
+    [item, from_phase, next_item, next_phase, due, picked_up, delay_seconds, result, nudged_at],
+    result one of picked, late, expired, cancelled. late and expired are misses. nudged_at is
+    when the Action nudged it, or None (rows logged before nudges have no ninth field)."""
     now = snap["now"]
-    logged = {_key(r) for r in snap["previous"].get("handoff_log", {}).get("rows", [])}
+    prev_rows = snap["previous"].get("handoff_log", {}).get("rows", [])
+    logged = {_key(r) for r in prev_rows}
+    # A step reported again before it was picked up is the same hand-off (a nudge asks for that).
+    spans: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
+    for pr_ in prev_rows:
+        if pr_[5]:
+            spans.setdefault((pr_[2], pr_[3]), []).append((pr_[4], pr_[5]))
+    sent = _sent_nudges(snap)
     waiting, rows, errors = [], [], []
     pending: Dict[Tuple[str, str], bool] = {}
     steps = []
@@ -140,28 +212,38 @@ def handoffs(snap, reports) -> Tuple[List[dict], List[list], List[dict]]:
             errors.append({"comment": c["url"], "error": f"a {r.phase} report must be on its own pull request "
                                                           f"(item/{r.item}-{r.phase} or contract/{r.item}-*)"})
             continue
-        if status == "waiting-merge":
-            continue
         for target, phase in r.next:
-            steps.append((due, status, c, r, target, phase))
+            if phase in cv.DUE_AT_REPORT:
+                # Due at the report, after any phase. A spec closed unmerged cancels it only if
+                # nothing picked it up first; its due time stays the report's, so it's one row.
+                steps.append((c["created"], "cancel-unpicked" if status == "cancelled" else "due", c, r, target, phase))
+            elif status != "waiting-merge":
+                steps.append((due, status, c, r, target, phase))
     steps.sort(key=lambda x: x[0])
     for due, status, c, r, target, phase in steps:
         row = [r.item, r.phase, target, phase, iso(due)]
         if tuple(row) in logged:
             continue
         if status == "cancelled":
-            rows.append(row + [None, None, "cancelled"])
+            rows.append(row + [None, None, "cancelled", None])
             logged.add(tuple(row))
             continue
         if pending.get((target, phase)):
             continue  # the same next step reported again while it still waits: one hand-off
-        picked = _pickup(snap, reports, target, phase, due)
+        if any(d <= row[4] <= p for d, p in spans.get((target, phase), [])):
+            continue  # reported again before an earlier report's pickup: that one hand-off, logged
+        nudged = (sent.get(tuple(row)) or {}).get("at")
+        picked = _pickup(snap, reports, target, phase, due, c["issue"])
         if picked:
             delay = int((picked - due).total_seconds())
-            rows.append(row + [iso(picked), delay, "late" if picked - due > HANDOFF_LIMIT else "picked"])
+            rows.append(row + [iso(picked), delay, "late" if picked - due > HANDOFF_LIMIT else "picked", nudged])
+            logged.add(tuple(row))
+            spans.setdefault((target, phase), []).append((row[4], iso(picked)))
+        elif status == "cancel-unpicked":
+            rows.append(row + [None, None, "cancelled", nudged])
             logged.add(tuple(row))
         elif now - due > HANDOFF_EXPIRY:
-            rows.append(row + [None, None, "expired"])
+            rows.append(row + [None, None, "expired", nudged])
             logged.add(tuple(row))
         else:
             pending[(target, phase)] = True
@@ -170,8 +252,10 @@ def handoffs(snap, reports) -> Tuple[List[dict], List[list], List[dict]]:
                     "item": target, "phase": phase, "after": f"{r.item} {r.phase}",
                     "due": iso(due), "waited_min": minutes(now - due),
                     "expected": cv.branch_for(target, phase) or (cv.contract_prefix(target) + "*" if phase == "contract"
-                                                                 else f"a review of item/{target}-build"),
+                                                                 else "a review of " + _review_target(snap, target, c)),
                     "report": c["url"],
+                    "nudged": sent.get(tuple(row)),
+                    "_row": row, "_pr": _own_pr(snap, c, r),
                 })
     return waiting, rows, errors
 
@@ -315,6 +399,11 @@ def compute(snap) -> Dict[str, Any]:
              or min([parse_time(r[4]) for r in new_rows] + [now]))
     dropped = copy.deepcopy(prev_log.get("dropped") or {"all": {"handoffs": 0, "missed": 0},
                                                          "first_14_days": {"handoffs": 0, "missed": 0}})
+    nudges = []
+    for w in waiting:
+        row, pr = w.pop("_row"), w.pop("_pr")
+        if w["nudged"] is None and pr is not None and len(nudges) < NUDGES_PER_RUN:
+            nudges.append({"pr": pr["number"], "key": row, "body": nudge_body(w, row)})
     first = _rate(rows, start, start + timedelta(days=MEASURE_DAYS), waiting)
     every = _rate(rows, start, None, waiting)
     for k, v in (("first_14_days", first), ("all", every)):
@@ -341,8 +430,18 @@ def compute(snap) -> Dict[str, Any]:
             "fallback_if": "more than 1 missed in 10 in the first 14 days (ADR-686)",
             "exceeded": first["handoffs"] > 0 and first["missed"] * 10 > first["handoffs"],
         },
+        "nudges": _nudge_counts(rows, waiting),
         "handoff_log": {"since": iso(start), "dropped": dropped, "rows": rows},
+        "nudges_to_send": nudges,
     }
+
+
+def _nudge_counts(rows: List[list], waiting: List[dict]) -> Dict[str, int]:
+    """How the nudges did, over the log's rows: picked up after the nudge, or not (yet)."""
+    sent = [r for r in rows if len(r) > 8 and r[8]]
+    after = sum(1 for r in sent if r[5] and r[5] >= r[8])
+    return {"sent": len(sent) + sum(1 for w in waiting if w["nudged"]), "picked_after": after,
+            "waiting": sum(1 for w in waiting if w["nudged"])}
 
 
 # Rows are folded only once their report has left the comment window (14 days), so a folded
