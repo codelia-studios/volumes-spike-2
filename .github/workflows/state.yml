@@ -49,7 +49,7 @@ permissions:
   actions: read # the nightly matrix's runs, for the dead-clock guard
   contents: read
   issues: write
-  pull-requests: read
+  pull-requests: write # the nudge: a comment on a pull request needs it (issues: write gets a 403)
   checks: read
   statuses: read
 
